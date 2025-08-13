@@ -461,6 +461,7 @@ type RuleMapper interface {
 - **Filesystem**: Validate configuration files and system files
 - **HTTP**: Check REST API endpoints and responses
 - **System**: Limited to service status checks only (systemctl, getenforce) for security
+- **AWS**: Scan AWS resources (Security Groups, IAM Users, IAM Access Keys, etc.)
 
 ### 3. OSCAL Integration
 - Converts OSCAL Component Definitions to CEL rules

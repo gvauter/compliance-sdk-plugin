@@ -52,7 +52,18 @@ type Config struct {
 		FilesystemEnabled bool `config:"enable_filesystem"`
 		HTTPEnabled       bool `config:"enable_http"`
 		SystemEnabled     bool `config:"enable_system"`
+		AWSEnabled        bool `config:"enable_aws"`
 		UseRPCServer      bool `config:"use_rpc_server"`
+	}
+
+	// AWS configuration
+	AWS struct {
+		Region          string `config:"aws_region"`
+		Profile         string `config:"aws_profile"`
+		AccessKeyID     string `config:"aws_access_key_id"`
+		SecretAccessKey string `config:"aws_secret_access_key"`
+		SessionToken    string `config:"aws_session_token"`
+		Timeout         int    `config:"aws_timeout"`
 	}
 
 	// Scanner configuration
@@ -71,6 +82,7 @@ func NewConfig() *Config {
 	cfg.Features.FilesystemEnabled = true
 	cfg.Parameters.TargetType = "system"
 	cfg.CELServer.Timeout = 30
+	cfg.AWS.Timeout = 30
 	return cfg
 }
 
@@ -105,6 +117,12 @@ func (c *Config) LoadSettings(config map[string]string) error {
 	scannerVal := reflect.ValueOf(&c.Scanner).Elem()
 	if err := setConfigStruct(scannerVal, config); err != nil {
 		return fmt.Errorf("failed to set scanner config: %w", err)
+	}
+
+	// Load AWS configuration
+	awsVal := reflect.ValueOf(&c.AWS).Elem()
+	if err := setConfigStruct(awsVal, config); err != nil {
+		return fmt.Errorf("failed to set AWS config: %w", err)
 	}
 
 	// Handle array fields separately

@@ -1,134 +1,156 @@
-# CELScanner Plugin Mapping Configuration
-# Maps OSCAL RuleSets and Checks to CEL Rules
+# Example mapping configuration for the CEL Scanner Plugin
+# This shows how OSCAL rules map to CEL expressions
 
-version: "1.0"
-
-# Mapping from RuleSet/Check IDs to CEL Rule IDs or inline definitions
 mappings:
-  # System service checks - map to stored rule IDs
-  sshd-service:
-    type: stored_rules  # Reference stored CEL rules
+  # AWS Security Groups - Parameterized version
+  aws-security:
+    type: "inline"
+    rules:
+      - id: "aws-security-groups-ssh"
+        expression: "!securityGroups.securityGroups.exists(sg, sg.ipPermissions.exists(rule, {{ expandPorts .AllowedPorts }} && rule.ipRanges.exists(ip, ip.cidrIp == '0.0.0.0/0')))"
+        inputs:
+          - name: "securityGroups"
+            type: "aws"
+            region: "{{ .AwsRegion }}"
+            profile: "{{ .AwsProfile }}"
+            resource_type: "security-groups"
+      - id: "aws-iam-old-access-keys"
+        expression: "!iamKeys.keys.exists(key, key.age_days > {{ .MaxAgeDays }} || (key.status == 'Active' && key.last_used_days == -1))"
+        inputs:
+          - name: "iamKeys"
+            type: "aws"
+            region: "{{ .AwsRegion }}"
+            profile: "{{ .AwsProfile }}"
+            resource_type: "iam-access-keys"
+            filters:
+              user: "{{ .IamUser }}"
+
+  # AWS IAM Compliance - Parameterized version with multiple parameters
+  aws-iam-compliance:
+    type: "inline" 
+    rules:
+      - id: "aws-iam-users-check"
+        expression: "iamUsers.users.exists(user, user.passwordLastUsed != null && user.passwordLastUsedDays <= {{ .MaxPasswordAge }})"
+        inputs:
+          - name: "iamUsers"
+            type: "aws"
+            region: "{{ .AwsRegion }}"
+            profile: "{{ .AwsProfile }}"
+            resource_type: "iam-users"
+
+  # Kubernetes Security - Parameterized version
+  kubernetes-security:
+    type: "inline"
+    rules:
+      - id: "pod-security-context"
+        expression: "pods.items.exists(pod, pod.spec.securityContext != null && pod.spec.securityContext.runAsNonRoot == true)"
+        inputs:
+          - name: "pods"
+            type: "kubernetes"
+            resource: "pods"
+            namespace: "{{ .Namespace }}"
+      - id: "privileged-containers"
+        expression: "!pods.items.exists(pod, pod.spec.containers.exists(container, container.securityContext != null && container.securityContext.privileged == true))"
+        inputs:
+          - name: "pods"
+            type: "kubernetes"
+            resource: "pods"
+            namespace: "{{ .Namespace }}"
+
+  # System Security - Parameterized service checks
+  system-security:
+    type: "inline"
+    rules:
+      - id: "service-enabled-check"
+        expression: "service.stdout.trim() == 'enabled'"
+        inputs:
+          - name: "service"
+            type: "system" 
+            command: "systemctl"
+            args: ["is-enabled", "{{ .ServiceName }}"]
+      - id: "firewall-active-check"
+        expression: "firewall.stdout.trim() == 'active'"
+        inputs:
+          - name: "firewall"
+            type: "system"
+            command: "systemctl"
+            args: ["is-active", "{{ .FirewallService }}"]
+
+  # File-based checks - Parameterized paths
+  file-security:
+    type: "inline"
+    rules:
+      - id: "config-file-permissions"
+        expression: "files.exists(file, file.mode & 0o077 == 0)"
+        inputs:
+          - name: "files"
+            type: "file"
+            path: "{{ .ConfigPath }}"
+      - id: "log-file-ownership"
+        expression: "logs.exists(log, log.uid == {{ .ExpectedUid }} && log.gid == {{ .ExpectedGid }})"
+        inputs:
+          - name: "logs"
+            type: "file"
+            path: "{{ .LogPath }}"
+
+  # HTTP API Security - Parameterized URLs and headers
+  api-security:
+    type: "inline"
+    rules:
+      - id: "api-authentication-required"
+        expression: "api.status == 401 || api.status == 403"
+        inputs:
+          - name: "api"
+            type: "http"
+            url: "{{ .ApiEndpoint }}/{{ .ProtectedPath }}"
+
+  # Advanced parameterization examples
+  advanced-aws:
+    type: "inline"
+    rules:
+      - id: "multi-region-security-groups"
+        expression: "!securityGroups.securityGroups.exists(sg, sg.ipPermissions.exists(rule, {{ expandPorts .DangerousPorts }} && rule.ipRanges.exists(ip, ip.cidrIp == '0.0.0.0/0')))"
+        inputs:
+          - name: "securityGroups"
+            type: "aws"
+            region: "{{ .AwsRegion }}"
+            profile: "{{ .AwsProfile }}"
+            resource_type: "security-groups"
+            filters:
+              group-name: "{{ .SecurityGroupPattern }}"
+      - id: "conditional-iam-check"
+        expression: "{{ if .CheckAccessKeys }}iamKeys.keys.all(key, key.age_days <= {{ .MaxKeyAge }}){{ else }}true{{ end }}"
+        inputs:
+          - name: "iamKeys"
+            type: "aws"
+            region: "{{ .AwsRegion }}"
+            profile: "{{ .AwsProfile }}"
+            resource_type: "iam-access-keys"
+
+  # Template rule that uses stored rules with parameters
+  stored-rule-example:
+    type: "stored_rules"
     rule_ids:
-      - sshd-service-enabled
-      - sshd-service-running
-    description: "SSH daemon service compliance checks"
+      - "aws-security-groups-ssh-open"
+      - "aws-iam-access-keys-old"
 
-  firewall-service:
-    type: stored_rules
-    rule_ids:
-      - firewalld-enabled
-      - firewalld-running
-    description: "Firewall service compliance checks"
-
-  selinux-compliance:
-    type: stored_rules
-    rule_ids:
-      - selinux-enforcing
-    description: "SELinux enforcement status check"
-
-  # Kubernetes security checks - inline CEL expressions
-  pod-security:
-    type: inline
-    rules:
-      - id: pod-security-context
-        expression: "has(resource.spec.securityContext) && has(resource.spec.securityContext.runAsNonRoot) && resource.spec.securityContext.runAsNonRoot == true"
-        inputs:
-          - name: resource
-            type: kubernetes
-            resource: pods
-      - id: pod-security-privileged
-        expression: "!resource.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true)"
-        inputs:
-          - name: resource
-            type: kubernetes
-            resource: pods
-    description: "Pod security compliance checks"
-
-  container-resources:
-    type: inline
-    rules:
-      - id: container-cpu-limits
-        expression: "resource.spec.containers.all(c, has(c.resources) && has(c.resources.limits) && has(c.resources.limits.cpu))"
-        inputs:
-          - name: resource
-            type: kubernetes
-            resource: pods
-      - id: container-memory-limits
-        expression: "resource.spec.containers.all(c, has(c.resources) && has(c.resources.limits) && has(c.resources.limits.memory))"
-        inputs:
-          - name: resource
-            type: kubernetes
-            resource: pods
-    description: "Container resource management checks"
-
-  # File configuration checks
-  ssh-config:
-    type: inline
-    rules:
-      - id: ssh-root-login
-        expression: 'config.content.contains("PermitRootLogin no")'
-        inputs:
-          - name: config
-            type: file
-            path: /etc/ssh/sshd_config
-      - id: ssh-password-auth
-        expression: 'config.content.contains("PasswordAuthentication no")'
-        inputs:
-          - name: config
-            type: file
-            path: /etc/ssh/sshd_config
-    description: "SSH configuration security checks"
-
-  # Network security checks
-  network-policies:
-    type: inline
-    rules:
-      - id: namespace-network-policy
-        expression: "resource.items.size() > 0"
-        inputs:
-          - name: resource
-            type: kubernetes
-            resource: networkpolicies
-            namespace: "${namespace}"
-    description: "Network policy compliance checks"
-
-# Parameters that can be used in expressions
-parameters:
-  namespace:
-    default: "default"
-    description: "Target namespace for Kubernetes checks"
-  min_replicas:
-    default: "2"
-    description: "Minimum number of replicas for HA"
-  max_cpu_limit:
-    default: "1000m"
-    description: "Maximum CPU limit for containers"
-  max_memory_limit:
-    default: "1Gi"
-    description: "Maximum memory limit for containers"
-
-# Rule templates for common patterns
-templates:
-  service-check:
-    enabled:
-      expression: 'service.success && contains(service.output, "enabled")'
-      inputs:
-        - name: service
-          type: system
-          command: systemctl
-          args: ["is-enabled", "${service_name}"]
-    running:
-      expression: 'service.success && contains(service.output, "active")'
-      inputs:
-        - name: service
-          type: system
-          command: systemctl
-          args: ["is-active", "${service_name}"]
-
-# Severity mappings for different check types
-severity_mappings:
-  security: HIGH
-  compliance: CRITICAL
-  performance: MEDIUM
-  availability: HIGH
-  governance: LOW
+# Default parameter values (can be overridden by OSCAL Assessment Plan)
+default_parameters:
+  MaxAgeDays: "90"
+  AllowedPorts: "443,22"
+  DangerousPorts: "22,3389,23"
+  AwsRegion: "us-east-1"
+  AwsProfile: "default"
+  MaxPasswordAge: "90"
+  ServiceName: "sshd"
+  FirewallService: "firewalld"
+  ConfigPath: "/etc/security/*"
+  LogPath: "/var/log/secure"
+  ExpectedUid: "0"
+  ExpectedGid: "0"
+  ApiEndpoint: "https://api.example.com"
+  ProtectedPath: "admin"
+  SecurityGroupPattern: "*"
+  CheckAccessKeys: "true"
+  MaxKeyAge: "90"
+  Namespace: "default"

@@ -1,0 +1,223 @@
+{
+  "assessment-plan": {
+    "uuid": "12345678-1234-5678-9abc-def123456789",
+    "metadata": {
+      "title": "Parameterized AWS Security Assessment",
+      "published": "2024-01-15T10:00:00Z",
+      "last-modified": "2024-01-15T10:00:00Z",
+      "version": "1.0",
+      "oscal-version": "1.1.3",
+      "props": [
+        {
+          "name": "framework",
+          "value": "CIS-AWS",
+          "ns": "https://trestle.nist.gov"
+        }
+      ]
+    },
+    "local-definitions": {
+      "activities": [
+        {
+          "uuid": "activity-1",
+          "title": "aws-security-groups-ssh-open",
+          "description": "Check SSH access control with custom port configuration",
+          "props": [
+            {
+              "name": "ssh-port",
+              "value": "22", 
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-region",
+              "value": "us-west-2",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-profile",
+              "value": "security-audit",
+              "class": "test-parameter"
+            }
+          ]
+        },
+        {
+          "uuid": "activity-2", 
+          "title": "aws-iam-access-keys-old",
+          "description": "Check IAM access key age with organization-specific policy",
+          "props": [
+            {
+              "name": "max-age-days",
+              "value": "60",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-region",
+              "value": "us-west-2", 
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-profile",
+              "value": "security-audit",
+              "class": "test-parameter"
+            }
+          ]
+        },
+        {
+          "uuid": "activity-3",
+          "title": "aws-security-groups-database-ports",
+          "description": "Check database port security with custom port list",
+          "props": [
+            {
+              "name": "database-ports",
+              "value": "3306,5432,1433,27017",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-region",
+              "value": "us-west-2",
+              "class": "test-parameter" 
+            },
+            {
+              "name": "aws-profile",
+              "value": "security-audit",
+              "class": "test-parameter"
+            }
+          ]
+        },
+        {
+          "uuid": "activity-4",
+          "title": "aws-iam-access-keys-specific-user",
+          "description": "Check specific service account access keys",
+          "props": [
+            {
+              "name": "iam-user",
+              "value": "service-deployment-bot",
+              "class": "test-parameter"
+            },
+            {
+              "name": "max-age-days",
+              "value": "30",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-region",
+              "value": "us-west-2",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-profile", 
+              "value": "security-audit",
+              "class": "test-parameter"
+            }
+          ]
+        },
+        {
+          "uuid": "activity-5",
+          "title": "aws-conditional-compliance-check",
+          "description": "Environment-specific compliance check",
+          "props": [
+            {
+              "name": "environment-type",
+              "value": "production",
+              "class": "test-parameter"
+            },
+            {
+              "name": "production-max-key-age",
+              "value": "30",
+              "class": "test-parameter"
+            },
+            {
+              "name": "non-production-max-key-age",
+              "value": "90",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-region",
+              "value": "us-west-2",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-profile",
+              "value": "security-audit",
+              "class": "test-parameter"
+            }
+          ]
+        },
+        {
+          "uuid": "activity-6",
+          "title": "aws-iam-users-recent-activity",
+          "description": "Check IAM user password activity",
+          "props": [
+            {
+              "name": "max-password-age",
+              "value": "45",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-region",
+              "value": "us-west-2",
+              "class": "test-parameter"
+            },
+            {
+              "name": "aws-profile",
+              "value": "security-audit",
+              "class": "test-parameter"
+            }
+          ]
+        }
+      ]
+    },
+    "assessment-assets": {
+      "components": [
+        {
+          "uuid": "component-1",
+          "type": "validation",
+          "title": "compliance-sdk-plugin",
+          "description": "CEL Scanner Plugin for parameterized compliance checking",
+          "props": [
+            {
+              "name": "provider-id",
+              "value": "compliance-sdk-plugin"
+            }
+          ],
+          "control-implementations": [
+            {
+              "uuid": "impl-1",
+              "source": "https://github.com/aws/security-baseline",
+              "description": "AWS security baseline implementation with custom parameters",
+              "implemented-requirements": [
+                {
+                  "uuid": "req-1",
+                  "control-id": "AC-4",
+                  "description": "Network access control with parameterized checks"
+                },
+                {
+                  "uuid": "req-2", 
+                  "control-id": "IA-5",
+                  "description": "Credential management with organization-specific policies"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "assessment-subjects": [
+      {
+        "type": "cloud-resource",
+        "description": "AWS security resources in production environment",
+        "include-subjects": [
+          {
+            "type": "location",
+            "description": "AWS us-west-2 region",
+            "props": [
+              {
+                "name": "region",
+                "value": "us-west-2"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+} 

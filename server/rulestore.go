@@ -40,15 +40,20 @@ type StoredRule struct {
 
 // RuleInputConfig represents input configuration in YAML
 type RuleInputConfig struct {
-	Name     string            `yaml:"name"`
-	Type     string            `yaml:"type"`
-	Resource string            `yaml:"resource,omitempty"`
-	Path     string            `yaml:"path,omitempty"`
-	URL      string            `yaml:"url,omitempty"`
-	Command  string            `yaml:"command,omitempty"`
-	Args     []string          `yaml:"args,omitempty"`
-	Service  string            `yaml:"service,omitempty"`
-	Metadata map[string]string `yaml:"metadata,omitempty"`
+	Name         string            `yaml:"name"`
+	Type         string            `yaml:"type"`
+	Resource     string            `yaml:"resource,omitempty"`
+	Path         string            `yaml:"path,omitempty"`
+	URL          string            `yaml:"url,omitempty"`
+	Command      string            `yaml:"command,omitempty"`
+	Args         []string          `yaml:"args,omitempty"`
+	Service      string            `yaml:"service,omitempty"`
+	Namespace    string            `yaml:"namespace,omitempty"`
+	Region       string            `yaml:"region,omitempty"`
+	Profile      string            `yaml:"profile,omitempty"`
+	ResourceType string            `yaml:"resource_type,omitempty"`
+	Filters      map[string]string `yaml:"filters,omitempty"`
+	Metadata     map[string]string `yaml:"metadata,omitempty"`
 }
 
 // NewRuleStore creates a new YAML-based rule store
@@ -220,12 +225,45 @@ func (s *RuleStore) Delete(id string) error {
 	return nil
 }
 
-// ConvertToCelRule converts a StoredRule to celscanner.CelRule
+// ConvertToCelRule converts a StoredRule to celscanner.CelRule (deprecated, use ConvertToCelRuleWithParams)
 func (s *RuleStore) ConvertToCelRule(stored *StoredRule) (celscanner.CelRule, error) {
+	// Create a dummy parameter context for backward compatibility
+	paramCtx := &ParameterContext{Parameters: make(map[string]string)}
+	return s.ConvertToCelRuleWithParams(stored, paramCtx)
+}
+
+// ConvertToCelRuleWithParams converts a StoredRule to celscanner.CelRule with parameter substitution
+func (s *RuleStore) ConvertToCelRuleWithParams(stored *StoredRule, paramCtx *ParameterContext) (celscanner.CelRule, error) {
+	// Apply parameter substitution to the expression
+	parameterizedExpression, err := paramCtx.ProcessParameterizedExpression(stored.Expression)
+	if err != nil {
+		hclog.Default().Warn("Failed to apply parameter substitution to stored rule expression", "rule_id", stored.ID, "error", err)
+		// Fall back to original expression if substitution fails
+		parameterizedExpression = stored.Expression
+	}
+
+	// Apply parameter substitution to name and description
+	parameterizedName, err := paramCtx.SubstituteString(stored.Name)
+	if err != nil {
+		hclog.Default().Warn("Failed to substitute rule name", "rule_id", stored.ID, "error", err)
+		parameterizedName = stored.Name
+	}
+
+	parameterizedDescription, err := paramCtx.SubstituteString(stored.Description)
+	if err != nil {
+		hclog.Default().Warn("Failed to substitute rule description", "rule_id", stored.ID, "error", err)
+		parameterizedDescription = stored.Description
+	}
+
+	hclog.Default().Debug("Applied parameter substitution to stored rule", 
+		"rule_id", stored.ID,
+		"original_expression", stored.Expression,
+		"parameterized_expression", parameterizedExpression)
+
 	builder := celscanner.NewRuleBuilder(stored.ID).
-		WithName(stored.Name).
-		WithDescription(stored.Description).
-		SetExpression(stored.Expression)
+		WithName(parameterizedName).
+		WithDescription(parameterizedDescription).
+		SetExpression(parameterizedExpression)
 
 	// Add tags as extension
 	if len(stored.Tags) > 0 {
@@ -245,23 +283,79 @@ func (s *RuleStore) ConvertToCelRule(stored *StoredRule) (celscanner.CelRule, er
 		builder.WithExtension(key, value)
 	}
 
-	// Add inputs based on type
+	// Add inputs based on type (with parameter substitution)
 	for _, input := range stored.Inputs {
-		switch strings.ToLower(input.Type) {
+		// Convert RuleInputConfig to InputDef for parameter substitution
+		inputDef := InputDef{
+			Name:         input.Name,
+			Type:         input.Type,
+			Resource:     input.Resource,
+			Path:         input.Path,
+			URL:          input.URL,
+			Command:      input.Command,
+			Args:         input.Args,
+			Namespace:    input.Namespace,
+			Region:       input.Region,
+			Profile:      input.Profile,
+			ResourceType: input.ResourceType,
+			Filters:      input.Filters,
+		}
+		
+		// Apply parameter substitution
+		parameterizedInput, err := paramCtx.SubstituteInputDef(inputDef)
+		if err != nil {
+			hclog.Default().Warn("Failed to apply parameter substitution to input", "rule_id", stored.ID, "input_name", input.Name, "error", err)
+			// Use original input if substitution fails
+			parameterizedInput = inputDef
+		}
+		
+		switch strings.ToLower(parameterizedInput.Type) {
 		case "kubernetes":
-			builder.WithKubernetesInput(input.Name, "", "v1", input.Resource, "", "")
+			builder.WithKubernetesInput(parameterizedInput.Name, "", "v1", parameterizedInput.Resource, parameterizedInput.Namespace, "")
 		case "file":
-			builder.WithFileInput(input.Name, input.Path, ".", false, false)
+			workDir := parameterizedInput.Path
+			if workDir == "" {
+				workDir = "."
+			}
+			builder.WithFileInput(parameterizedInput.Name, parameterizedInput.Path, workDir, false, false)
 		case "http":
-			builder.WithHTTPInput(input.Name, input.URL, "GET", nil, nil)
+			builder.WithHTTPInput(parameterizedInput.Name, parameterizedInput.URL, "GET", nil, nil)
 		case "system":
 			if input.Service != "" {
-				// Service-based check
-				builder.WithSystemInput(input.Name, input.Service, "", []string{})
-			} else if input.Command != "" {
+				// Service-based check (use original service field since it's not in InputDef)
+				serviceName, _ := paramCtx.SubstituteString(input.Service)
+				builder.WithSystemInput(parameterizedInput.Name, serviceName, "", []string{})
+			} else if parameterizedInput.Command != "" {
 				// Command-based check
-				builder.WithSystemInput(input.Name, "", input.Command, input.Args)
+				builder.WithSystemInput(parameterizedInput.Name, "", parameterizedInput.Command, parameterizedInput.Args)
 			}
+				case "aws":
+			// Convert map[string]string filters to map[string][]string
+			var filters map[string][]string
+			if parameterizedInput.Filters != nil {
+				filters = make(map[string][]string)
+				for k, v := range parameterizedInput.Filters {
+					filters[k] = []string{v}
+				}
+			}
+			
+			// Use resource type from input
+			resourceType := parameterizedInput.ResourceType
+			if resourceType == "" {
+				resourceType = parameterizedInput.Resource // fallback to resource field
+			}
+			
+			// Fallbacks for region/profile from plugin configuration if missing
+			region := parameterizedInput.Region
+			if strings.TrimSpace(region) == "" {
+				region = s.getDefaultAWSRegion()
+			}
+			profile := parameterizedInput.Profile
+			if strings.TrimSpace(profile) == "" {
+				profile = s.getDefaultAWSProfile()
+			}
+			
+			builder.WithAWSInput(parameterizedInput.Name, region, resourceType, filters, profile)
 		}
 	}
 
@@ -371,4 +465,18 @@ func (s *RuleStore) ImportRules(inputPath string, overwrite bool) error {
 	}
 
 	return fmt.Errorf("unable to parse import file format")
+}
+
+func (s *RuleStore) getDefaultAWSRegion() string {
+	if v := os.Getenv("AWS_REGION"); strings.TrimSpace(v) != "" {
+		return v
+	}
+	return "us-east-1"
+}
+
+func (s *RuleStore) getDefaultAWSProfile() string {
+	if v := os.Getenv("AWS_PROFILE"); strings.TrimSpace(v) != "" {
+		return v
+	}
+	return "default"
 }

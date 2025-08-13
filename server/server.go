@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -69,14 +70,18 @@ type InlineCELRule struct {
 
 // InputDef represents an input definition
 type InputDef struct {
-	Name      string   `yaml:"name"`
-	Type      string   `yaml:"type"`
-	Resource  string   `yaml:"resource,omitempty"`
-	Path      string   `yaml:"path,omitempty"`
-	URL       string   `yaml:"url,omitempty"`
-	Command   string   `yaml:"command,omitempty"`
-	Args      []string `yaml:"args,omitempty"`
-	Namespace string   `yaml:"namespace,omitempty"`
+	Name         string            `yaml:"name"`
+	Type         string            `yaml:"type"`
+	Resource     string            `yaml:"resource,omitempty"`
+	Path         string            `yaml:"path,omitempty"`
+	URL          string            `yaml:"url,omitempty"`
+	Command      string            `yaml:"command,omitempty"`
+	Args         []string          `yaml:"args,omitempty"`
+	Namespace    string            `yaml:"namespace,omitempty"`
+	Region       string            `yaml:"region,omitempty"`
+	Profile      string            `yaml:"profile,omitempty"`
+	ResourceType string            `yaml:"resource_type,omitempty"`
+	Filters      map[string]string `yaml:"filters,omitempty"`
 }
 
 // ParameterDef represents a parameter definition
@@ -193,11 +198,38 @@ func (s *PluginServer) GetResults(ctx context.Context, oscalPolicy policy.Policy
 
 	// Convert to CelRule objects
 	var celRules []celscanner.CelRule
+	foundAWSInput := false
+	// Track thresholds (e.g., MaxAgeDays) per rule to craft result reasons
+	thresholdByRuleID := make(map[string]string)
+
+	// Prefer threshold from OSCAL parameters passed into GetResults
+	daysThreshold := ""
+	for _, rs := range oscalPolicy {
+		for _, prm := range rs.Rule.Parameters {
+			if prm.Value == "" {
+				continue
+			}
+			if prm.ID == "MaxKeyAge" || prm.ID == "MaxAgeDays" || strings.EqualFold(prm.ID, "max_key_age") || strings.EqualFold(prm.ID, "max_age_days") {
+				daysThreshold = prm.Value
+			}
+		}
+	}
 	for _, ruleData := range rulesData {
 		// For now, create simple rules from the data
 		// In practice, you'd need a proper deserialization method
 		id, _ := ruleData["id"].(string)
 		expr, _ := ruleData["celexpr"].(string)
+
+		// Set threshold for this rule: prefer OSCAL param value if present, otherwise parse from expression
+		if id != "" {
+			if daysThreshold != "" {
+				thresholdByRuleID[id] = daysThreshold
+			} else if expr != "" {
+				if thr := extractDaysThreshold(expr); thr != "" {
+					thresholdByRuleID[id] = thr
+				}
+			}
+		}
 
 		if id != "" && expr != "" {
 			ruleBuilder := celscanner.NewRuleBuilder(id).
@@ -220,6 +252,32 @@ func (s *PluginServer) GetResults(ctx context.Context, oscalPolicy policy.Policy
 
 								ruleBuilder.WithKubernetesInput(inputName, group, version, resourceType, namespace, resourceName)
 							}
+						} else if inputType == "aws" {
+							if inputSpec, ok := input["inputspec"].(map[string]interface{}); ok {
+								region, _ := inputSpec["awsregion"].(string)
+								resourceType, _ := inputSpec["awsresourcetype"].(string)
+								profile, _ := inputSpec["awsprofile"].(string)
+								var filters map[string][]string
+								if f, ok := inputSpec["awsfilters"].(map[string]interface{}); ok {
+									filters = make(map[string][]string)
+									for k, v := range f {
+										switch tv := v.(type) {
+										case []interface{}:
+											for _, item := range tv {
+												if s, ok := item.(string); ok && s != "" {
+													filters[k] = append(filters[k], s)
+												}
+											}
+										case string:
+											if tv != "" {
+												filters[k] = []string{tv}
+											}
+										}
+									}
+								}
+								ruleBuilder.WithAWSInput(inputName, region, resourceType, filters, profile)
+								foundAWSInput = true
+							}
 						}
 					}
 				}
@@ -231,6 +289,12 @@ func (s *PluginServer) GetResults(ctx context.Context, oscalPolicy policy.Policy
 				hclog.Default().Warn("Failed to build rule", "id", id, "error", err)
 			}
 		}
+	}
+
+	// Ensure AWS fetcher is enabled if any rule requires AWS inputs
+	if foundAWSInput && !s.Config.Features.AWSEnabled {
+		s.Config.Features.AWSEnabled = true
+		hclog.Default().Info("AWS fetching enabled based on rule requirements")
 	}
 
 	// Create scanner based on configuration
@@ -275,11 +339,25 @@ func (s *PluginServer) GetResults(ctx context.Context, oscalPolicy policy.Policy
 		// Create subject for this observation
 		subject := policy.Subject{
 			Title:       s.Config.Parameters.TargetName,
-			Type:        s.Config.Parameters.TargetType,
+			Type:        "inventory-item",
 			ResourceID:  s.Config.Parameters.TargetID,
 			Result:      pvpResultStatus,
 			EvaluatedOn: time.Now(),
-			Reason:      result.ErrorMessage,
+		}
+
+		// If we know the threshold used for this rule, craft a human-readable reason
+		if thr, ok := thresholdByRuleID[result.ID]; ok && thr != "" {
+			if result.Status == celscanner.CheckResultPass {
+				subject.Reason = fmt.Sprintf("api key not older than %s days", thr)
+			} else if result.Status == celscanner.CheckResultFail {
+				subject.Reason = fmt.Sprintf("api key older than %s days", thr)
+			} else {
+				// Preserve error message for non pass/fail
+				subject.Reason = result.ErrorMessage
+			}
+		} else {
+			// Fallback
+			subject.Reason = result.ErrorMessage
 		}
 
 		observation.Subjects = append(observation.Subjects, subject)
@@ -334,6 +412,23 @@ func (s *PluginServer) createLocalScanner() *celscanner.Scanner {
 		fetcherBuilder.WithSystem(false) // Disable general system commands
 		hclog.Default().Info("System service status checking enabled (limited mode)")
 		// TODO: Implement custom service status fetcher with restricted capabilities
+	}
+
+	if s.Config.Features.AWSEnabled {
+		// Configure AWS fetcher
+		region := s.Config.AWS.Region
+		if region == "" {
+			region = "us-east-2" // Default region
+		}
+		profile := s.Config.AWS.Profile
+		timeout := time.Duration(s.Config.AWS.Timeout) * time.Second
+		if timeout == 0 {
+			timeout = 30 * time.Second
+		}
+
+		awsFetcher := fetchers.NewAWSFetcher(region, profile, timeout)
+		fetcherBuilder.WithCustomFetcher(celscanner.InputTypeAWS, awsFetcher)
+		hclog.Default().Info("AWS fetching enabled", "region", region, "profile", profile)
 	}
 
 	fetcher := fetcherBuilder.Build()
@@ -516,10 +611,18 @@ func (s *PluginServer) loadMappingConfig() (*MappingConfig, error) {
 func (s *PluginServer) getCELRulesForRuleSet(ruleSet extensions.RuleSet, mappingConfig *MappingConfig) ([]celscanner.CelRule, error) {
 	var celRules []celscanner.CelRule
 
+	// Create parameter context for substitution
+	paramCtx := NewParameterContext(ruleSet)
+	hclog.Default().Debug("Created parameter context for RuleSet", "rule_id", ruleSet.Rule.ID, "param_count", len(paramCtx.Parameters))
+	paramCtx.LogParameters()
+
+	// Apply plugin-config defaults to parameter context for missing values (e.g., AWS region/profile)
+	s.applyConfigDefaultsToParamCtx(paramCtx)
+
 	// First, try to map the RuleSet.Rule.ID
 	if mappingConfig != nil {
 		if mapping, exists := mappingConfig.Mappings[ruleSet.Rule.ID]; exists {
-			rules, err := s.processMappingDefinition(ruleSet, mapping)
+			rules, err := s.processMappingDefinitionWithParams(ruleSet, mapping, paramCtx)
 			if err != nil {
 				return nil, err
 			}
@@ -529,7 +632,7 @@ func (s *PluginServer) getCELRulesForRuleSet(ruleSet extensions.RuleSet, mapping
 		// Also check for Check IDs
 		for _, check := range ruleSet.Checks {
 			if mapping, exists := mappingConfig.Mappings[check.ID]; exists {
-				rules, err := s.processMappingDefinition(ruleSet, mapping)
+				rules, err := s.processMappingDefinitionWithParams(ruleSet, mapping, paramCtx)
 				if err != nil {
 					hclog.Default().Warn("Failed to process mapping for check", "check_id", check.ID, "error", err)
 					continue
@@ -542,7 +645,7 @@ func (s *PluginServer) getCELRulesForRuleSet(ruleSet extensions.RuleSet, mapping
 	// If no mapping found, fall back to built-in mappings
 	if len(celRules) == 0 {
 		for _, check := range ruleSet.Checks {
-			rule, err := s.createDefaultCELRule(ruleSet, check)
+			rule, err := s.createDefaultCELRuleWithParams(ruleSet, check, paramCtx)
 			if err != nil {
 				hclog.Default().Warn("Failed to create default CEL rule", "check_id", check.ID, "error", err)
 				continue
@@ -556,8 +659,17 @@ func (s *PluginServer) getCELRulesForRuleSet(ruleSet extensions.RuleSet, mapping
 	return celRules, nil
 }
 
-// processMappingDefinition processes a mapping definition to create CEL rules
+// processMappingDefinition processes a mapping definition to create CEL rules (deprecated, use processMappingDefinitionWithParams)
 func (s *PluginServer) processMappingDefinition(ruleSet extensions.RuleSet, mapping MappingDefinition) ([]celscanner.CelRule, error) {
+	// Create a parameter context for backward compatibility
+	paramCtx := NewParameterContext(ruleSet)
+	// Apply plugin-config defaults for missing parameters
+	s.applyConfigDefaultsToParamCtx(paramCtx)
+	return s.processMappingDefinitionWithParams(ruleSet, mapping, paramCtx)
+}
+
+// processMappingDefinitionWithParams processes a mapping definition to create CEL rules with parameter substitution
+func (s *PluginServer) processMappingDefinitionWithParams(ruleSet extensions.RuleSet, mapping MappingDefinition, paramCtx *ParameterContext) ([]celscanner.CelRule, error) {
 	var celRules []celscanner.CelRule
 
 	switch mapping.Type {
@@ -574,7 +686,7 @@ func (s *PluginServer) processMappingDefinition(ruleSet extensions.RuleSet, mapp
 				continue
 			}
 
-			celRule, err := s.ruleStore.ConvertToCelRule(storedRule)
+			celRule, err := s.ruleStore.ConvertToCelRuleWithParams(storedRule, paramCtx)
 			if err != nil {
 				hclog.Default().Warn("Failed to convert stored rule", "rule_id", ruleID, "error", err)
 				continue
@@ -588,7 +700,7 @@ func (s *PluginServer) processMappingDefinition(ruleSet extensions.RuleSet, mapp
 	case "inline":
 		// Create rules from inline definitions
 		for _, inlineRule := range mapping.Rules {
-			celRule, err := s.createCELRuleFromInline(ruleSet, inlineRule)
+			celRule, err := s.createCELRuleFromInlineWithParams(ruleSet, inlineRule, paramCtx)
 			if err != nil {
 				hclog.Default().Warn("Failed to create inline CEL rule", "rule_id", inlineRule.ID, "error", err)
 				continue
@@ -603,15 +715,41 @@ func (s *PluginServer) processMappingDefinition(ruleSet extensions.RuleSet, mapp
 	return celRules, nil
 }
 
-// createCELRuleFromInline creates a CEL rule from an inline definition
+// createCELRuleFromInline creates a CEL rule from an inline definition (deprecated, use createCELRuleFromInlineWithParams)
 func (s *PluginServer) createCELRuleFromInline(ruleSet extensions.RuleSet, inline InlineCELRule) (celscanner.CelRule, error) {
-	builder := celscanner.NewRuleBuilder(inline.ID).
-		SetExpression(inline.Expression).
-		WithName(inline.ID).
+	// Create a parameter context for backward compatibility
+	paramCtx := NewParameterContext(ruleSet)
+	// Apply plugin-config defaults for missing parameters
+	s.applyConfigDefaultsToParamCtx(paramCtx)
+	return s.createCELRuleFromInlineWithParams(ruleSet, inline, paramCtx)
+}
+
+// createCELRuleFromInlineWithParams creates a CEL rule from an inline definition with parameter substitution
+func (s *PluginServer) createCELRuleFromInlineWithParams(ruleSet extensions.RuleSet, inline InlineCELRule, paramCtx *ParameterContext) (celscanner.CelRule, error) {
+	// Apply parameter substitution to the inline rule
+	parameterizedRule, err := paramCtx.SubstituteInlineCELRule(inline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply parameter substitution: %w", err)
+	}
+
+	// Process the CEL expression for advanced parameterization
+	processedExpression, err := paramCtx.ProcessParameterizedExpression(parameterizedRule.Expression)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process parameterized expression: %w", err)
+	}
+
+	hclog.Default().Debug("Applied parameter substitution to inline rule", 
+		"rule_id", inline.ID,
+		"original_expression", inline.Expression,
+		"parameterized_expression", processedExpression)
+
+	builder := celscanner.NewRuleBuilder(parameterizedRule.ID).
+		SetExpression(processedExpression).
+		WithName(parameterizedRule.ID).
 		WithDescription(fmt.Sprintf("Inline rule for %s", ruleSet.Rule.ID))
 
-	// Add inputs
-	for _, input := range inline.Inputs {
+	// Add inputs (parameterized versions)
+	for _, input := range parameterizedRule.Inputs {
 		switch input.Type {
 		case "kubernetes":
 			builder.WithKubernetesInput(input.Name, "", "v1", input.Resource, input.Namespace, "")
@@ -623,6 +761,38 @@ func (s *PluginServer) createCELRuleFromInline(ruleSet extensions.RuleSet, inlin
 			if input.Command != "" {
 				builder.WithSystemInput(input.Name, "", input.Command, input.Args)
 			}
+				case "aws":
+			// Convert map[string]string filters to map[string][]string
+			var filters map[string][]string
+			if input.Filters != nil {
+				filters = make(map[string][]string)
+				for k, v := range input.Filters {
+					filters[k] = []string{v}
+				}
+			}
+			
+			// Use region from input, fallback to config, then default
+			region := input.Region
+			if region == "" {
+				region = s.Config.AWS.Region
+			}
+			if region == "" {
+				region = "us-east-1"
+			}
+			
+			// Use profile from input, fallback to config
+			profile := input.Profile
+			if profile == "" {
+				profile = s.Config.AWS.Profile
+			}
+			
+			// Use resource type from input
+			resourceType := input.ResourceType
+			if resourceType == "" {
+				resourceType = input.Resource // fallback to resource field
+			}
+			
+			builder.WithAWSInput(input.Name, region, resourceType, filters, profile)
 		}
 	}
 
@@ -633,15 +803,37 @@ func (s *PluginServer) createCELRuleFromInline(ruleSet extensions.RuleSet, inlin
 	return builder.Build()
 }
 
-// createDefaultCELRule creates a CEL rule using built-in mappings
+// createDefaultCELRule creates a CEL rule using built-in mappings (deprecated, use createDefaultCELRuleWithParams)
 func (s *PluginServer) createDefaultCELRule(ruleSet extensions.RuleSet, check extensions.Check) (celscanner.CelRule, error) {
+	// Create a parameter context for backward compatibility
+	paramCtx := NewParameterContext(ruleSet)
+	// Apply plugin-config defaults for missing parameters
+	s.applyConfigDefaultsToParamCtx(paramCtx)
+	return s.createDefaultCELRuleWithParams(ruleSet, check, paramCtx)
+}
+
+// createDefaultCELRuleWithParams creates a CEL rule using built-in mappings with parameter substitution
+func (s *PluginServer) createDefaultCELRuleWithParams(ruleSet extensions.RuleSet, check extensions.Check, paramCtx *ParameterContext) (celscanner.CelRule, error) {
 	expression := s.mapCheckToExpression(check.ID)
 	if expression == "" {
 		return nil, nil // No mapping found
 	}
 
+	// Apply parameter substitution to the expression
+	parameterizedExpression, err := paramCtx.ProcessParameterizedExpression(expression)
+	if err != nil {
+		hclog.Default().Warn("Failed to apply parameter substitution to default expression", "check_id", check.ID, "error", err)
+		// Fall back to original expression if substitution fails
+		parameterizedExpression = expression
+	}
+
+	hclog.Default().Debug("Applied parameter substitution to default rule", 
+		"check_id", check.ID,
+		"original_expression", expression,
+		"parameterized_expression", parameterizedExpression)
+
 	builder := celscanner.NewRuleBuilder(check.ID).
-		SetExpression(expression).
+		SetExpression(parameterizedExpression).
 		WithName(check.ID).
 		WithDescription(check.Description)
 
@@ -649,22 +841,35 @@ func (s *PluginServer) createDefaultCELRule(ruleSet extensions.RuleSet, check ex
 	builder.WithExtension("oscal_rule_id", ruleSet.Rule.ID)
 	builder.WithExtension("check_id", check.ID)
 
-	// Add default inputs based on check type
-	if err := s.addDefaultInputs(builder, check.ID); err != nil {
+	// Add default inputs based on check type (with parameter context for potential future enhancement)
+	if err := s.addDefaultInputsWithParams(builder, check.ID, paramCtx); err != nil {
 		return nil, err
 	}
 
 	return builder.Build()
 }
 
-// addDefaultInputs adds default inputs based on check ID patterns
+// addDefaultInputs adds default inputs based on check ID patterns (deprecated, use addDefaultInputsWithParams)
 func (s *PluginServer) addDefaultInputs(builder *celscanner.RuleBuilder, checkID string) error {
+	// Create a dummy parameter context for backward compatibility
+	return s.addDefaultInputsWithParams(builder, checkID, &ParameterContext{Parameters: make(map[string]string)})
+}
+
+// addDefaultInputsWithParams adds default inputs based on check ID patterns with parameter substitution
+func (s *PluginServer) addDefaultInputsWithParams(builder *celscanner.RuleBuilder, checkID string, paramCtx *ParameterContext) error {
 	if checkID == "pod-security-context" || checkID == "resource-limits" || checkID == "privileged-containers" {
-		builder.WithKubernetesInput("resource", "", "v1", "pods", "", "")
+		// Kubernetes inputs - could be parameterized with namespace
+		namespace := paramCtx.GetParameterValue("namespace", "")
+		builder.WithKubernetesInput("resource", "", "v1", "pods", namespace, "")
 	} else if strings.Contains(checkID, "service") || strings.Contains(checkID, "sshd") ||
 		strings.Contains(checkID, "firewalld") || strings.Contains(checkID, "selinux") {
 		// System service checks - use system input for service status
 		serviceName := extractServiceName(checkID)
+		// Allow service name to be parameterized
+		if parameterizedServiceName := paramCtx.GetParameterValue("service-name", ""); parameterizedServiceName != "" {
+			serviceName = parameterizedServiceName
+		}
+		
 		if strings.Contains(checkID, "enabled") {
 			builder.WithSystemInput("service", "", "systemctl", []string{"is-enabled", serviceName})
 		} else if strings.Contains(checkID, "running") || strings.Contains(checkID, "active") {
@@ -675,8 +880,10 @@ func (s *PluginServer) addDefaultInputs(builder *celscanner.RuleBuilder, checkID
 			builder.WithSystemInput("service", serviceName, "", []string{})
 		}
 	} else {
-		// Default to file input for unknown checks
-		builder.WithFileInput("resource", "*", ".", false, false)
+		// Default to file input for unknown checks - could be parameterized with path
+		path := paramCtx.GetParameterValue("file-path", "*")
+		workDir := paramCtx.GetParameterValue("work-dir", ".")
+		builder.WithFileInput("resource", path, workDir, false, false)
 	}
 	return nil
 }
@@ -717,4 +924,50 @@ func (s *PluginServer) loadMappingsFromFile(mappingFile string) (map[string]stri
 	}
 
 	return result, nil
+}
+
+// applyConfigDefaultsToParamCtx injects defaults from plugin configuration into the parameter context
+// without overriding any values already provided by the assessment plan.
+func (s *PluginServer) applyConfigDefaultsToParamCtx(paramCtx *ParameterContext) {
+	if paramCtx == nil {
+		return
+	}
+
+	setIfMissing := func(keys []string, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		// Check if any of the keys already has a non-empty value
+		for _, k := range keys {
+			if v, ok := paramCtx.Parameters[k]; ok && strings.TrimSpace(v) != "" {
+				return
+			}
+		}
+		// None set; set all variants for convenience in templates
+		for _, k := range keys {
+			paramCtx.Parameters[k] = value
+		}
+	}
+
+	// AWS Region defaults (support common variants used in templates)
+	setIfMissing([]string{"AwsRegion", "awsRegion", "aws_region"}, s.Config.AWS.Region)
+	// AWS Profile defaults
+	setIfMissing([]string{"AwsProfile", "awsProfile", "aws_profile"}, s.Config.AWS.Profile)
+}
+
+// Helper to extract a numeric days threshold from a CEL expression string
+func extractDaysThreshold(expr string) string {
+	// Try patterns like: daysOld > 365 or age_days > 365
+	patterns := []string{
+		`daysOld\s*>\s*(\d+)`,
+		`age_days\s*>\s*(\d+)`,
+	}
+	for _, p := range patterns {
+		re := regexp.MustCompile(p)
+		m := re.FindStringSubmatch(expr)
+		if len(m) == 2 {
+			return m[1]
+		}
+	}
+	return ""
 }

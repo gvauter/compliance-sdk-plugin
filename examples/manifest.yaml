@@ -27,6 +27,7 @@ plugins:
       enable_filesystem: true
       enable_http: false
       enable_system: true
+      enable_aws: true
       
       # CEL RPC Server configuration (optional)
       use_rpc_server: false
@@ -41,6 +42,11 @@ plugins:
       include_namespaces: "default,production"
       exclude_namespaces: "kube-system,kube-public"
       resource_types: "pods,deployments,services,configmaps,secrets"
+      
+      # AWS configuration
+      aws_region: "us-east-1"
+      aws_profile: "default"
+      aws_timeout: 30
       
       # Profile selection (maps to OSCAL framework ID)
       profile: "nist-800-53-high"

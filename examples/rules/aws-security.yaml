@@ -1,0 +1,154 @@
+# AWS Security CEL Rules with Parameter Support
+# These rules can be referenced by mapping configurations
+
+# Security Groups Rules - Parameterized
+- id: "aws-security-groups-ssh-open"
+  name: "SSH Access Control Check"
+  description: "Checks that security groups do not allow SSH (port {{ .SshPort }}) access from 0.0.0.0/0"
+  expression: "!securityGroups.securityGroups.exists(sg, sg.ipPermissions.exists(rule, rule.fromPort == {{ .SshPort }} && rule.ipRanges.exists(ip, ip.cidrIp == '0.0.0.0/0')))"
+  inputs:
+    - name: "securityGroups"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "security-groups"
+  tags: ["aws", "security", "network"]
+  category: "security"
+  severity: "high"
+  extensions:
+    cis_control: "5.2"
+    nist_control: "AC-4"
+  check_id: "aws-sg-ssh-check"
+
+- id: "aws-security-groups-rdp-open"
+  name: "RDP Access Control Check"
+  description: "Checks that security groups do not allow RDP (port {{ .RdpPort }}) access from 0.0.0.0/0"
+  expression: "!securityGroups.securityGroups.exists(sg, sg.ipPermissions.exists(rule, rule.fromPort == {{ .RdpPort }} && rule.ipRanges.exists(ip, ip.cidrIp == '0.0.0.0/0')))"
+  inputs:
+    - name: "securityGroups"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "security-groups"
+  tags: ["aws", "security", "network", "windows"]
+  category: "security" 
+  severity: "high"
+  extensions:
+    cis_control: "5.2"
+    nist_control: "AC-4"
+  check_id: "aws-sg-rdp-check"
+
+# IAM Access Keys Rules - Parameterized
+- id: "aws-iam-access-keys-old"
+  name: "IAM Access Keys Age Check"
+  description: "Checks that IAM access keys are not older than {{ .MaxAgeDays }} days or unused"
+  expression: "!iamKeys.keys.exists(key, key.age_days > {{ .MaxAgeDays }} || (key.status == 'Active' && key.last_used_days == -1))"
+  inputs:
+    - name: "iamKeys"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "iam-access-keys"
+  tags: ["aws", "iam", "security", "credentials"]
+  category: "security"
+  severity: "critical"
+  extensions:
+    cis_control: "16.1"
+    nist_control: "IA-5"
+  check_id: "aws-iam-key-age-check"
+
+- id: "aws-iam-users-access-keys-age"
+  name: "IAM Users Access Key Age Check"
+  description: "Checks that IAM user access keys are not older than {{ .MaxAgeDays }} days"
+  expression: "!iamKeys.keys.exists(key, key.age_days > {{ .MaxAgeDays }})"
+  inputs:
+    - name: "iamKeys"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "iam-access-keys"
+  tags: ["aws", "iam", "security", "access-keys"]
+  category: "security"
+  severity: "medium"
+  extensions:
+    cis_control: "16.1"
+    nist_control: "IA-5"
+  check_id: "aws-iam-user-keys-age-check"
+
+  # Advanced Parameterized Rules
+- id: "aws-security-groups-database-ports"
+  name: "Database Ports Security Check"
+  description: "Checks that security groups do not expose database ports {{ expandPorts .DatabasePorts }} to 0.0.0.0/0"
+  expression: "!securityGroups.securityGroups.exists(sg, sg.ipPermissions.exists(rule, {{ expandPorts .DatabasePorts }} && rule.ipRanges.exists(ip, ip.cidrIp == '0.0.0.0/0')))"
+  inputs:
+    - name: "securityGroups"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "security-groups"
+  tags: ["aws", "security", "database", "network"]
+  category: "security"
+  severity: "critical"
+  extensions:
+    cis_control: "5.2"
+    nist_control: "AC-4"
+  check_id: "aws-sg-db-ports-check"
+
+- id: "aws-iam-access-keys-specific-user"
+  name: "Specific User Access Keys Check"
+  description: "Checks access keys for specific user {{ .IamUser }} are compliant"
+  expression: "!iamKeys.keys.exists(key, key.age_days > {{ .MaxAgeDays }} || (key.status == 'Active' && key.last_used_days == -1))"
+  inputs:
+    - name: "iamKeys"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "iam-access-keys"
+      filters:
+        user: "{{ .IamUser }}"
+  tags: ["aws", "iam", "security", "user-specific"]
+  category: "security"
+  severity: "high"
+  extensions:
+    cis_control: "16.1"
+    nist_control: "IA-5"
+  check_id: "aws-iam-user-keys-check"
+
+# Multi-region and conditional rules
+- id: "aws-multi-region-security-groups"
+  name: "Multi-Region Security Groups Check"
+  description: "Checks security groups across multiple regions {{ .AwsRegions }}"
+  expression: "!securityGroups.securityGroups.exists(sg, sg.ipPermissions.exists(rule, {{ expandPorts .AllowedPorts }} && rule.ipRanges.exists(ip, ip.cidrIp == '0.0.0.0/0')))"
+  inputs:
+    - name: "securityGroups"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "security-groups"
+      filters:
+        group-name: "{{ .SecurityGroupPattern }}"
+  tags: ["aws", "security", "multi-region"]
+  category: "security"
+  severity: "high"
+  extensions:
+    cis_control: "5.2"
+    compliance_scope: "multi-region"
+  check_id: "aws-sg-multi-region-check"
+
+# Complex conditional rule with default values
+- id: "aws-conditional-compliance-check"
+  name: "Conditional AWS Compliance Check"
+  description: "Performs different checks based on environment type {{ .EnvironmentType }}"
+  expression: "{{ if eq .EnvironmentType \"production\" }}iamKeys.keys.all(key, key.age_days <= {{ .ProductionMaxKeyAge }}){{ else }}iamKeys.keys.all(key, key.age_days <= {{ .NonProductionMaxKeyAge }}){{ end }}"
+  inputs:
+    - name: "iamKeys"
+      type: "aws"
+      region: "{{ .AwsRegion }}"
+      profile: "{{ .AwsProfile }}"
+      resource_type: "iam-access-keys"
+  tags: ["aws", "conditional", "environment-specific"]
+  category: "governance"
+  severity: "medium"
+  extensions:
+    compliance_scope: "environment-conditional"
+  check_id: "aws-conditional-check" 

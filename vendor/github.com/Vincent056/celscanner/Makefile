@@ -112,9 +112,15 @@ example-filesystem:
 
 .PHONY: example-live-kubernetes
 example-live-kubernetes:
+	@cd examples/live-kubernetes && ./setup-test.sh
 	@echo "Running live kubernetes example..."
 	@echo "Note: This requires a live Kubernetes cluster connection"
 	@cd examples/live-kubernetes && go run main.go
+
+.PHONY: example-live-kubernetes-manual-fix
+example-live-kubernetes-manual-fix:
+	@cd examples/live-kubernetes && ./manual-fix.sh
+
 
 .PHONY: example-system-monitoring
 example-system-monitoring:

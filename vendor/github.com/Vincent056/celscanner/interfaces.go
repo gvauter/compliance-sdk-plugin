@@ -82,6 +82,9 @@ const (
 	// InputTypeHTTP represents HTTP API inputs
 	InputTypeHTTP InputType = "http"
 
+	// InputTypeAWS represents AWS inputs 
+	InputTypeAWS InputType = "aws"
+
 	// InputTypeDatabase represents database inputs
 	InputTypeDatabase InputType = "database"
 )
@@ -317,6 +320,35 @@ func (s *HTTPInput) Headers() map[string]string { return s.HTTPHeaders }
 func (s *HTTPInput) Body() []byte               { return s.HTTPBody }
 func (s *HTTPInput) Validate() error            { return nil }
 
+// CustomInputSpec provides a generic input spec for custom data
+type CustomInputSpec struct {
+	Data map[string]interface{} `json:"data"`
+}
+
+func (s *CustomInputSpec) Validate() error { return nil }
+
+// AWSInputImpl provides a concrete implementation of AWS input spec (to avoid circular dependency)
+type AWSInputImpl struct {
+	AWSRegion       string              `json:"region"`
+	AWSResourceType string              `json:"resourceType"`
+	AWSFilters      map[string][]string `json:"filters,omitempty"`
+	AWSProfile      string              `json:"profile,omitempty"`
+}
+
+func (a *AWSInputImpl) Region() string                 { return a.AWSRegion }
+func (a *AWSInputImpl) ResourceType() string           { return a.AWSResourceType }
+func (a *AWSInputImpl) Filters() map[string][]string   { return a.AWSFilters }
+func (a *AWSInputImpl) Profile() string                { return a.AWSProfile }
+func (a *AWSInputImpl) Validate() error {
+	if a.AWSRegion == "" {
+		return fmt.Errorf("AWS region is required")
+	}
+	if a.AWSResourceType == "" {
+		return fmt.Errorf("AWS resource type is required")
+	}
+	return nil
+}
+
 // ===== CONVENIENCE CONSTRUCTORS =====
 
 // NewRule creates a new CEL rule with optional metadata
@@ -394,6 +426,20 @@ func NewHTTPInput(name, url, method string, headers map[string]string, body []by
 	}
 }
 
+// NewAWSInput creates an AWS resource input
+func NewAWSInput(name, region, resourceType string, filters map[string][]string, profile string) Input {
+	return &InputImpl{
+		InputName: name,
+		InputType: InputTypeAWS,
+		InputSpec: &AWSInputImpl{
+			AWSRegion:       region,
+			AWSResourceType: resourceType,
+			AWSFilters:      filters,
+			AWSProfile:      profile,
+		},
+	}
+}
+
 // ===== BUILDER PATTERN =====
 
 // RuleBuilder provides a fluent API for building rules
@@ -439,6 +485,27 @@ func (b *RuleBuilder) WithSystemInput(name, service, command string, args []stri
 // WithHTTPInput adds an HTTP input to the rule
 func (b *RuleBuilder) WithHTTPInput(name, url, method string, headers map[string]string, body []byte) *RuleBuilder {
 	input := NewHTTPInput(name, url, method, headers, body)
+	return b.WithInput(input)
+}
+
+// WithAWSInput adds an AWS input to the rule
+func (b *RuleBuilder) WithAWSInput(name, region, resourceType string, filters map[string][]string, profile string) *RuleBuilder {
+	input := NewAWSInput(name, region, resourceType, filters, profile)
+	return b.WithInput(input)
+}
+
+// WithAWSSecurityGroupsInput adds an AWS Security Groups input to the rule
+func (b *RuleBuilder) WithAWSSecurityGroupsInput(name, region string, filters map[string][]string, profile string) *RuleBuilder {
+	input := &InputImpl{
+		InputName: name,
+		InputType: InputType("aws-security-groups"),
+		InputSpec: &AWSInputImpl{
+			AWSRegion:       region,
+			AWSResourceType: "security-groups",
+			AWSFilters:      filters,
+			AWSProfile:      profile,
+		},
+	}
 	return b.WithInput(input)
 }
 

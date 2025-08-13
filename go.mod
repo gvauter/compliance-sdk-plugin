@@ -4,6 +4,8 @@ go 1.24.0
 
 toolchain go1.24.3
 
+replace github.com/Vincent056/celscanner => ../celscanner
+
 require (
 	github.com/Vincent056/celscanner v0.0.0-20250806120007-3ce59489e8f7
 	github.com/hashicorp/go-hclog v1.6.3
@@ -20,6 +22,21 @@ require (
 require (
 	cel.dev/expr v0.24.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
+	github.com/aws/aws-sdk-go-v2 v1.37.2 // indirect
+	github.com/aws/aws-sdk-go-v2/config v1.30.3 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.18.3 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.3 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.241.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/iam v1.39.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.27.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.32.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.36.0 // indirect
+	github.com/aws/smithy-go v1.22.5 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/defenseunicorns/go-oscal v0.6.2 // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect

@@ -45,6 +45,7 @@ type CompositeFetcher struct {
 	filesystemFetcher *FilesystemFetcher
 	systemFetcher     *SystemFetcher
 	httpFetcher       *HTTPFetcher
+	awsFetcher        *AWSFetcher
 
 	// Registry of custom fetchers for extensibility
 	customFetchers map[celscanner.InputType]celscanner.InputFetcher
@@ -82,6 +83,9 @@ func NewCompositeFetcherWithDefaults(
 
 	// Set up HTTP fetcher
 	fetcher.httpFetcher = NewHTTPFetcher(30*time.Second, true, 3)
+
+	// Set up AWS fetcher with defaults
+	fetcher.awsFetcher = NewAWSFetcher("us-east-1", "", 30*time.Second)
 
 	return fetcher
 }
@@ -152,6 +156,8 @@ func (c *CompositeFetcher) getFetcherForType(inputType celscanner.InputType) cel
 		return c.systemFetcher
 	case celscanner.InputTypeHTTP:
 		return c.httpFetcher
+	case AWSInputType, AWSSecurityGroupsInputType:
+		return c.awsFetcher
 	default:
 		return nil
 	}
@@ -182,6 +188,11 @@ func (c *CompositeFetcher) SetHTTPFetcher(fetcher *HTTPFetcher) {
 	c.httpFetcher = fetcher
 }
 
+// SetAWSFetcher sets the AWS fetcher
+func (c *CompositeFetcher) SetAWSFetcher(fetcher *AWSFetcher) {
+	c.awsFetcher = fetcher
+}
+
 // GetSupportedInputTypes returns all supported input types
 func (c *CompositeFetcher) GetSupportedInputTypes() []celscanner.InputType {
 	var types []celscanner.InputType
@@ -198,6 +209,9 @@ func (c *CompositeFetcher) GetSupportedInputTypes() []celscanner.InputType {
 	}
 	if c.httpFetcher != nil {
 		types = append(types, celscanner.InputTypeHTTP)
+	}
+	if c.awsFetcher != nil {
+		types = append(types, AWSInputType, AWSSecurityGroupsInputType)
 	}
 
 	// Add custom types
@@ -265,6 +279,12 @@ func (b *CompositeFetcherBuilder) WithSystem(allowArbitraryCommands bool) *Compo
 // WithHTTP configures HTTP support
 func (b *CompositeFetcherBuilder) WithHTTP(timeout time.Duration, followRedirects bool, maxRetries int) *CompositeFetcherBuilder {
 	b.fetcher.SetHTTPFetcher(NewHTTPFetcher(timeout, followRedirects, maxRetries))
+	return b
+}
+
+// WithAWS configures AWS support
+func (b *CompositeFetcherBuilder) WithAWS(defaultRegion, defaultProfile string, timeout time.Duration) *CompositeFetcherBuilder {
+	b.fetcher.SetAWSFetcher(NewAWSFetcher(defaultRegion, defaultProfile, timeout))
 	return b
 }
 
