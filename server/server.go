@@ -13,6 +13,7 @@ import (
 
 	"github.com/Vincent056/celscanner"
 	"github.com/Vincent056/celscanner/fetchers"
+	"github.com/google/uuid"
 	"github.com/hashicorp/go-hclog"
 	"github.com/oscal-compass/compliance-to-policy-go/v2/policy"
 	"github.com/oscal-compass/oscal-sdk-go/extensions"
@@ -383,6 +384,35 @@ func (s *PluginServer) GetResults(ctx context.Context, oscalPolicy policy.Policy
 	}
 
 	hclog.Default().Info("Completed CEL scan", "observations", len(observations))
+
+	for _, obs := range pvpResult.ObservationsByCheck {
+		for _, sub := range obs.Subjects {
+			ev := Evidence{
+				Metadata: Metadata{
+					ID:        uuid.NewString(),
+					Collected: time.Now().UTC(),
+					Source:    "celscanner",
+					PolicyID:  obs.CheckID, // TODO: use rule id not check id
+					Decision:  resultToDecision(sub.Result),
+					Subject: Resource{
+						Name: sub.ResourceID,
+					},
+				},
+				Details: []Resource{
+					{
+						Name:      "cel-results.yaml",
+						MediaType: "text/plain",
+						URI:       resultsFile,
+					},
+				},
+			}
+			err = PushEvidence(ctx, "http://localhost:8083/v1/push", ev)
+			if err != nil {
+				hclog.Default().Error("failed to push evidence", "error", err)
+			}
+		}
+	}
+
 	return pvpResult, nil
 }
 
@@ -738,7 +768,7 @@ func (s *PluginServer) createCELRuleFromInlineWithParams(ruleSet extensions.Rule
 		return nil, fmt.Errorf("failed to process parameterized expression: %w", err)
 	}
 
-	hclog.Default().Debug("Applied parameter substitution to inline rule", 
+	hclog.Default().Debug("Applied parameter substitution to inline rule",
 		"rule_id", inline.ID,
 		"original_expression", inline.Expression,
 		"parameterized_expression", processedExpression)
@@ -761,7 +791,7 @@ func (s *PluginServer) createCELRuleFromInlineWithParams(ruleSet extensions.Rule
 			if input.Command != "" {
 				builder.WithSystemInput(input.Name, "", input.Command, input.Args)
 			}
-				case "aws":
+		case "aws":
 			// Convert map[string]string filters to map[string][]string
 			var filters map[string][]string
 			if input.Filters != nil {
@@ -770,7 +800,7 @@ func (s *PluginServer) createCELRuleFromInlineWithParams(ruleSet extensions.Rule
 					filters[k] = []string{v}
 				}
 			}
-			
+
 			// Use region from input, fallback to config, then default
 			region := input.Region
 			if region == "" {
@@ -779,19 +809,19 @@ func (s *PluginServer) createCELRuleFromInlineWithParams(ruleSet extensions.Rule
 			if region == "" {
 				region = "us-east-1"
 			}
-			
+
 			// Use profile from input, fallback to config
 			profile := input.Profile
 			if profile == "" {
 				profile = s.Config.AWS.Profile
 			}
-			
+
 			// Use resource type from input
 			resourceType := input.ResourceType
 			if resourceType == "" {
 				resourceType = input.Resource // fallback to resource field
 			}
-			
+
 			builder.WithAWSInput(input.Name, region, resourceType, filters, profile)
 		}
 	}
@@ -827,7 +857,7 @@ func (s *PluginServer) createDefaultCELRuleWithParams(ruleSet extensions.RuleSet
 		parameterizedExpression = expression
 	}
 
-	hclog.Default().Debug("Applied parameter substitution to default rule", 
+	hclog.Default().Debug("Applied parameter substitution to default rule",
 		"check_id", check.ID,
 		"original_expression", expression,
 		"parameterized_expression", parameterizedExpression)
@@ -869,7 +899,7 @@ func (s *PluginServer) addDefaultInputsWithParams(builder *celscanner.RuleBuilde
 		if parameterizedServiceName := paramCtx.GetParameterValue("service-name", ""); parameterizedServiceName != "" {
 			serviceName = parameterizedServiceName
 		}
-		
+
 		if strings.Contains(checkID, "enabled") {
 			builder.WithSystemInput("service", "", "systemctl", []string{"is-enabled", serviceName})
 		} else if strings.Contains(checkID, "running") || strings.Contains(checkID, "active") {
@@ -970,4 +1000,19 @@ func extractDaysThreshold(expr string) string {
 		}
 	}
 	return ""
+}
+
+// resultToDecision maps policy.Result to a ProofWatch-friendly decision string
+func resultToDecision(r policy.Result) string {
+	switch r {
+	case policy.ResultPass:
+		return "pass"
+	case policy.ResultFail:
+		return "fail"
+	case policy.ResultError:
+		return "error"
+	default:
+		// Unknown/invalid -> fall back to needs review semantics
+		return "warning"
+	}
 }
